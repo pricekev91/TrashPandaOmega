@@ -32,6 +32,9 @@ const batchApplyButton = document.getElementById('batch-apply-button');
 const batchNotInterestedButton = document.getElementById('batch-not-interested-button');
 const batchReturnButton = document.getElementById('batch-return-button');
 const batchSnoozeButton = document.getElementById('batch-snooze-button');
+const runIngestNowButton = document.getElementById('run-ingest-now-button');
+const ingestRunStatusElement = document.getElementById('ingest-run-status');
+const ingestRunsElement = document.getElementById('ingest-runs');
 
 const BUCKETS = [
   { key: 'queue', label: 'Queue' },
@@ -58,6 +61,7 @@ let latestDashboardSummary = null;
 let activeBucket = 'queue';
 let activeNextAction = 'all';
 const selectedJobIds = new Set();
+let ingestRuns = [];
 
 function formatTimestamp(value) {
   if (!value) {
@@ -241,6 +245,33 @@ function renderMasterResume(resume) {
   masterResumeStatusElement.textContent = `${contentState} Last updated ${formatTimestamp(resume?.updated_at)}.`;
 }
 
+function renderIngestRuns() {
+  if (!ingestRuns.length) {
+    ingestRunsElement.innerHTML = '<div class="empty compact-empty">No ingest runs yet.</div>';
+    ingestRunStatusElement.textContent = 'No automation runs yet.';
+    return;
+  }
+
+  ingestRunsElement.innerHTML = ingestRuns.map((run) => `
+    <article class="run-card">
+      <p class="feed-name">${escapeHtml(run.status)}</p>
+      <p class="feed-meta">${formatRelativeTime(run.updated_at)}</p>
+      <p class="feed-meta">feeds ${run.feeds_completed}/${run.feeds_total} · pages ${run.pages_collected} · jobs +${run.jobs_inserted}</p>
+      <p class="feed-meta">updated ${run.jobs_updated} · skipped ${run.jobs_skipped}</p>
+      <p class="feed-meta">${escapeHtml(run.error_summary || 'No run errors')}</p>
+    </article>
+  `).join('');
+
+  const activeRun = ingestRuns.find((run) => run.status === 'queued' || run.status === 'running');
+  if (activeRun) {
+    ingestRunStatusElement.textContent = `Run ${activeRun.status}: feeds ${activeRun.feeds_completed}/${activeRun.feeds_total}, pages ${activeRun.pages_collected}.`;
+    return;
+  }
+
+  const latestRun = ingestRuns[0];
+  ingestRunStatusElement.textContent = `Last run ${latestRun.status}. Inserted ${latestRun.jobs_inserted} jobs and updated ${latestRun.jobs_updated}.`;
+}
+
 function renderStateMachine() {
   const counts = latestDashboardSummary?.lifecycle_counts || {};
   const states = [
@@ -339,6 +370,9 @@ function renderJobs(jobs) {
     const sourceLink = job.source_url
       ? `<a class="job-link" href="${escapeHtml(job.source_url)}" target="_blank" rel="noreferrer">Open listing</a>`
       : '<span class="job-link muted-link">No source link</span>';
+    const titleMarkup = job.source_url
+      ? `<a class="job-title-link" href="${escapeHtml(job.source_url)}" target="_blank" rel="noreferrer">${escapeHtml(job.title)}</a>`
+      : escapeHtml(job.title);
     const decisionReason = job.decision_reason
       ? `<p class="decision-reason"><strong>Why not interested:</strong> ${escapeHtml(job.decision_reason)}</p>`
       : '';
@@ -355,7 +389,7 @@ function renderJobs(jobs) {
       <div class="job-card-header">
         <div>
           <p class="job-company">${escapeHtml(job.company)}</p>
-          <h3>${escapeHtml(job.title)}</h3>
+          <h3>${titleMarkup}</h3>
         </div>
       </div>
       <div class="badge-row">${renderBadges(job)}</div>
@@ -403,6 +437,7 @@ function renderView() {
   renderNextActionLane();
   renderBuckets();
   renderFeedHealth();
+  renderIngestRuns();
   renderStateMachine();
   renderJobs(visibleJobs());
 }
@@ -627,6 +662,76 @@ async function loadIngestState() {
   latestIngestState = await response.json();
 }
 
+async function loadFeedConfigs() {
+  const response = await fetch('/api/v1/feeds');
+  if (response.status === 404) {
+    return [];
+  }
+  if (!response.ok) {
+    throw new Error(`Feeds API returned ${response.status}`);
+  }
+  return response.json();
+}
+
+async function loadIngestRuns() {
+  const response = await fetch('/api/v1/ingest-runs?limit=8');
+  if (!response.ok) {
+    throw new Error(`Ingest runs API returned ${response.status}`);
+  }
+  ingestRuns = await response.json();
+}
+
+async function createFeedConfig(payload) {
+  const response = await fetch('/api/v1/feeds', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Create feed failed with ${response.status}`);
+  }
+
+  return response.json();
+}
+
+async function updateFeedConfig(feedId, payload) {
+  const response = await fetch(`/api/v1/feeds/${feedId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Update feed failed with ${response.status}`);
+  }
+
+  return response.json();
+}
+
+async function runIngestNow() {
+  const response = await fetch('/api/v1/ingest-runs/run-now', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Run now failed with ${response.status}`);
+  }
+
+  return response.json();
+}
+
 async function loadDashboardSummary() {
   const response = await fetch(`/api/v1/dashboard-summary?in_flight_window_days=${windowFilter.value}`);
   if (!response.ok) {
@@ -647,6 +752,9 @@ async function loadJobs() {
     allJobs = await jobsResponse.json();
     await loadIngestState();
     await loadDashboardSummary();
+    // Older deployments do not expose feed CRUD yet; keep dashboard available.
+    await loadFeedConfigs();
+    await loadIngestRuns();
     renderMasterResume(await loadMasterResume());
     renderView();
   } catch (error) {
@@ -761,6 +869,16 @@ saveMasterResumeButton.addEventListener('click', async () => {
     masterResumeStatusElement.textContent = `Master resume saved. Last updated ${formatTimestamp(updatedResume.updated_at)}.`;
   } catch (error) {
     masterResumeStatusElement.textContent = `Save failed: ${error.message}`;
+  }
+});
+
+runIngestNowButton.addEventListener('click', async () => {
+  try {
+    const run = await runIngestNow();
+    ingestRunStatusElement.textContent = `Run queued: ${run.run_id}`;
+    await loadJobs();
+  } catch (error) {
+    ingestRunStatusElement.textContent = `Run failed: ${error.message}`;
   }
 });
 

@@ -113,3 +113,73 @@ class DeleteAllJobsRequest(BaseModel):
 
 class DeleteAllJobsResponse(BaseModel):
     deleted_jobs: int
+
+
+class FeedConfigBase(BaseModel):
+    name: str
+    source_site: str
+    search_url: str
+    enabled: bool = True
+    include_keywords: str = ""
+    exclude_keywords: str = ""
+    location_hint: str = ""
+    radius_miles: int | None = None
+    schedule_days: str = "mon,thu"
+    schedule_hour_local: int = 7
+    max_pages_per_run: int = 3
+
+
+class FeedConfigCreateRequest(FeedConfigBase):
+    pass
+
+
+class FeedConfigUpdateRequest(BaseModel):
+    name: str | None = None
+    source_site: str | None = None
+    search_url: str | None = None
+    enabled: bool | None = None
+    include_keywords: str | None = None
+    exclude_keywords: str | None = None
+    location_hint: str | None = None
+    radius_miles: int | None = None
+    schedule_days: str | None = None
+    schedule_hour_local: int | None = None
+    max_pages_per_run: int | None = None
+
+
+class FeedConfigResponse(FeedConfigBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class IngestRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    status: str
+    trigger_type: str
+    requested_feed_ids: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    feeds_total: int
+    feeds_completed: int
+    pages_collected: int
+    artifacts_processed: int
+    jobs_inserted: int
+    jobs_updated: int
+    jobs_skipped: int
+    error_summary: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RunNowRequest(BaseModel):
+    feed_ids: list[str] | None = None
+
+
+class RunNowResponse(BaseModel):
+    run_id: str
+    status: str

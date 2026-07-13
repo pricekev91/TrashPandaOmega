@@ -14,6 +14,10 @@
         <p class="lede">
           Live jobs are ingested, scored, and routed into one workflow lane so the next useful action is obvious instead of buried in card-by-card busywork.
         </p>
+        <div class="top-nav">
+          <a class="button-link is-active" href="/">Dashboard</a>
+          <a class="button-link" href="/feeds.html">Feeds</a>
+        </div>
       </section>
 
       <section class="next-actions-panel panel-lite">
@@ -102,6 +106,21 @@
             </div>
             <div id="feed-health" class="feed-health"></div>
             <p class="metric-note" id="ingest-summary">Loading ingest status...</p>
+          </section>
+
+          <section class="sidebar-panel panel-lite">
+            <div class="section-heading compact-heading">
+              <div>
+                <p class="section-kicker">Automation</p>
+                <h2>Ingest Control</h2>
+              </div>
+            </div>
+            <div class="ingest-run-actions">
+              <button id="run-ingest-now-button" type="button">Run Ingest Now</button>
+              <a class="button-link" href="/feeds.html">Manage Feeds</a>
+              <p class="metric-note" id="ingest-run-status">No automation runs yet.</p>
+            </div>
+            <div id="ingest-runs" class="ingest-runs-list"></div>
           </section>
 
           <section class="sidebar-panel panel-lite">

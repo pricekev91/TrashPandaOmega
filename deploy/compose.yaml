@@ -23,6 +23,7 @@ services:
       TRASHPANDA_AI_MODEL: ${TRASHPANDA_AI_MODEL:-qwen2.5-coder-verbose:latest}
       TRASHPANDA_CONFIG_DIR: /app/config
       TRASHPANDA_DATA_DIR: /app/data
+      TRASHPANDA_ARTIFACTS_DIR: /app/incoming
     depends_on:
       db:
         condition: service_healthy
@@ -31,6 +32,7 @@ services:
     volumes:
       - ${TRASHPANDA_CONFIG_DIR:-./runtime/config}:/app/config:ro
       - ${TRASHPANDA_DATA_DIR:-./runtime/data}:/app/data
+      - ${TRASHPANDA_ARTIFACTS_DIR:-./runtime/incoming}:/app/incoming
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
       interval: 10s
@@ -46,12 +48,14 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://trashpanda:trashpanda@db:5432/trashpanda}
       TRASHPANDA_CONFIG_DIR: /app/config
       TRASHPANDA_DATA_DIR: /app/data
+      TRASHPANDA_ARTIFACTS_DIR: /app/incoming
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ${TRASHPANDA_CONFIG_DIR:-./runtime/config}:/app/config:ro
       - ${TRASHPANDA_DATA_DIR:-./runtime/data}:/app/data
+      - ${TRASHPANDA_ARTIFACTS_DIR:-./runtime/incoming}:/app/incoming
 
   dashboard:
     build:

@@ -14,6 +14,7 @@ class Settings(BaseModel):
     ai_model: str = os.getenv("TRASHPANDA_AI_MODEL", "qwen2.5-coder-verbose:latest")
     config_dir: str = os.getenv("TRASHPANDA_CONFIG_DIR", "/app/config")
     data_dir: str = os.getenv("TRASHPANDA_DATA_DIR", "/app/data")
+    artifacts_dir: str = os.getenv("TRASHPANDA_ARTIFACTS_DIR", "/app/data/incoming")
 
 
 @lru_cache(maxsize=1)

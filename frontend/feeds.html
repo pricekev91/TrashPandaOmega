@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TrashPanda Feeds</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">TrashPanda</p>
+        <h1>Feed Configuration</h1>
+        <p class="lede">
+          Add and tune ingest feeds in one place, then run automation on demand to pull fresh jobs into the scored queue.
+        </p>
+        <div class="top-nav">
+          <a class="button-link" href="/">Dashboard</a>
+          <a class="button-link is-active" href="/feeds.html">Feeds</a>
+        </div>
+      </section>
+
+      <section class="workspace workspace-single">
+        <section class="panel panel-main">
+          <div class="panel-header">
+            <div>
+              <h2>Manage Feeds</h2>
+              <p id="feed-page-status">Loading feed configuration...</p>
+            </div>
+            <div class="panel-actions">
+              <button id="run-ingest-now-button" type="button">Run Ingest Now</button>
+              <button id="refresh-feeds-button" type="button">Refresh</button>
+            </div>
+          </div>
+
+          <section class="batch-panel">
+            <div class="section-heading compact-heading">
+              <div>
+                <p class="section-kicker">New source</p>
+                <h2>Add Feed</h2>
+              </div>
+            </div>
+            <form id="feed-config-form" class="feed-config-form">
+              <label class="action-field">
+                <span>Feed name</span>
+                <input id="feed-name" type="text" placeholder="LinkedIn On-Prem 1hr" required>
+              </label>
+              <label class="action-field">
+                <span>Source site</span>
+                <select id="feed-source" required>
+                  <option value="linkedin">LinkedIn</option>
+                  <option value="indeed">Indeed</option>
+                  <option value="google_jobs">Google Jobs</option>
+                  <option value="flexjobs">FlexJobs</option>
+                  <option value="glassdoor">Glassdoor</option>
+                  <option value="ziprecruiter">ZipRecruiter</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label class="action-field action-field-wide">
+                <span>Saved search URL</span>
+                <input id="feed-url" type="url" placeholder="https://..." required>
+              </label>
+              <label class="action-field action-field-wide">
+                <span>Include keywords (comma-separated)</span>
+                <input id="feed-include" type="text" placeholder="platform, sre, terraform">
+              </label>
+              <label class="action-field action-field-wide">
+                <span>Exclude keywords (comma-separated)</span>
+                <input id="feed-exclude" type="text" placeholder="senior manager, sales">
+              </label>
+              <label class="action-field">
+                <span>Location hint</span>
+                <input id="feed-location" type="text" placeholder="Austin, TX">
+              </label>
+              <label class="action-field">
+                <span>Radius (miles)</span>
+                <input id="feed-radius" type="number" min="1" max="300" value="35">
+              </label>
+              <label class="action-field">
+                <span>Schedule days</span>
+                <input id="feed-days" type="text" value="mon,thu">
+              </label>
+              <label class="action-field">
+                <span>Schedule hour</span>
+                <input id="feed-hour" type="number" min="0" max="23" value="7">
+              </label>
+              <label class="action-field">
+                <span>Max pages/run</span>
+                <input id="feed-pages" type="number" min="1" max="20" value="3">
+              </label>
+              <button id="save-feed-button" type="submit">Add feed</button>
+            </form>
+          </section>
+
+          <section class="batch-panel">
+            <div class="section-heading compact-heading">
+              <div>
+                <p class="section-kicker">Configured feeds</p>
+                <h2>Current Feed List</h2>
+              </div>
+            </div>
+            <div id="feed-config-list" class="feed-config-list"></div>
+          </section>
+
+          <section class="batch-panel">
+            <div class="section-heading compact-heading">
+              <div>
+                <p class="section-kicker">Automation state</p>
+                <h2>Feed Health</h2>
+              </div>
+            </div>
+            <div id="feed-health" class="feed-health"></div>
+            <p class="metric-note" id="ingest-summary">Loading ingest status...</p>
+          </section>
+
+          <section class="batch-panel">
+            <div class="section-heading compact-heading">
+              <div>
+                <p class="section-kicker">History</p>
+                <h2>Recent Ingest Runs</h2>
+              </div>
+            </div>
+            <p class="metric-note" id="ingest-run-status">No automation runs yet.</p>
+            <div id="ingest-runs" class="ingest-runs-list"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/feeds.js"></script>
+  </body>
+</html>

@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+from threading import Lock, Thread
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import delete, text
@@ -9,21 +10,28 @@ from sqlalchemy.orm import Session
 
 from backend.app.admin import build_cleared_ingest_state, validate_delete_all_jobs_confirmation
 from backend.app.config import get_settings
-from backend.app.database import Base, engine, ensure_job_schema, get_db
+from backend.app.database import Base, SessionLocal, engine, ensure_job_schema, get_db
+from backend.app.ingest_automation import run_ingest_automation
 from backend.app.ingest_state import build_ingest_state_response
-from backend.app.models import Job
+from backend.app.models import IngestFeedConfig, IngestRun, Job
 from backend.app.schemas import (
     BatchJobUpdateRequest,
     BatchJobUpdateResponse,
     DashboardSummaryResponse,
     DeleteAllJobsRequest,
     DeleteAllJobsResponse,
+    FeedConfigCreateRequest,
+    FeedConfigResponse,
+    FeedConfigUpdateRequest,
     HealthResponse,
     IngestStateResponse,
+    IngestRunResponse,
     JobResponse,
     JobUpdateRequest,
     MasterResumeResponse,
     MasterResumeUpdateRequest,
+    RunNowRequest,
+    RunNowResponse,
     ScoreExplanationResponse,
 )
 
@@ -32,6 +40,9 @@ settings = get_settings()
 VALID_STATUSES = {"queued", "shortlisted", "applied", "archived", "not_interested", "discovered"}
 VALID_NEXT_ACTIONS = {"apply_now", "resume_tailoring", "research", "follow_up", "archive"}
 FOLLOW_UP_INTERVAL_DAYS = 7
+SUPPORTED_FEED_SITES = {"google_jobs", "linkedin", "indeed", "flexjobs", "glassdoor", "ziprecruiter", "other"}
+RUN_LOCK = Lock()
+ACTIVE_RUN_ID: str | None = None
 
 
 @asynccontextmanager
@@ -43,6 +54,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TrashPanda API", version="0.1.0", lifespan=lifespan)
 MASTER_RESUME_PATH = Path(settings.data_dir) / "master-resume.md"
+ARTIFACTS_ROOT = Path(settings.artifacts_dir)
 
 
 def as_utc(value: datetime | None) -> datetime | None:
@@ -313,6 +325,65 @@ def write_master_resume(content: str) -> MasterResumeResponse:
     return read_master_resume()
 
 
+def validate_feed_payload(
+    *,
+    source_site: str,
+    search_url: str,
+    schedule_hour_local: int,
+    max_pages_per_run: int,
+    radius_miles: int | None,
+) -> None:
+    if source_site not in SUPPORTED_FEED_SITES:
+        raise HTTPException(status_code=400, detail="Unsupported source site")
+    if not search_url.startswith("http://") and not search_url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="search_url must start with http:// or https://")
+    if schedule_hour_local < 0 or schedule_hour_local > 23:
+        raise HTTPException(status_code=400, detail="schedule_hour_local must be between 0 and 23")
+    if max_pages_per_run < 1 or max_pages_per_run > 20:
+        raise HTTPException(status_code=400, detail="max_pages_per_run must be between 1 and 20")
+    if radius_miles is not None and (radius_miles < 1 or radius_miles > 300):
+        raise HTTPException(status_code=400, detail="radius_miles must be between 1 and 300")
+
+
+def run_ingest_async(run_id: str, feed_ids: list[str] | None = None) -> None:
+    global ACTIVE_RUN_ID
+    try:
+        with SessionLocal() as session:
+            run = session.query(IngestRun).filter(IngestRun.id == run_id).one_or_none()
+            if run is None:
+                return
+
+            feeds_query = session.query(IngestFeedConfig).filter(IngestFeedConfig.enabled.is_(True))
+            if feed_ids:
+                feeds_query = feeds_query.filter(IngestFeedConfig.id.in_(feed_ids))
+
+            feeds = feeds_query.order_by(IngestFeedConfig.created_at.desc()).all()
+            if not feeds:
+                run.status = "failed"
+                run.started_at = datetime.utcnow()
+                run.finished_at = datetime.utcnow()
+                run.error_summary = "No enabled feeds are configured for this run."
+                session.add(run)
+                session.commit()
+                return
+
+            ARTIFACTS_ROOT.mkdir(parents=True, exist_ok=True)
+            run_ingest_automation(session, run, feeds, ARTIFACTS_ROOT)
+    except Exception as error:
+        with SessionLocal() as session:
+            run = session.query(IngestRun).filter(IngestRun.id == run_id).one_or_none()
+            if run is not None:
+                run.status = "failed"
+                run.finished_at = datetime.utcnow()
+                run.error_summary = f"Run failed: {error}"
+                session.add(run)
+                session.commit()
+    finally:
+        with RUN_LOCK:
+            if ACTIVE_RUN_ID == run_id:
+                ACTIVE_RUN_ID = None
+
+
 @app.get("/health", response_model=HealthResponse)
 def health(db: Session = Depends(get_db)) -> HealthResponse:
     db.execute(text("SELECT 1"))
@@ -472,3 +543,128 @@ def delete_all_jobs(payload: DeleteAllJobsRequest, db: Session = Depends(get_db)
     db.commit()
     write_ingest_state(build_cleared_ingest_state(load_ingest_state()))
     return DeleteAllJobsResponse(deleted_jobs=deleted_jobs)
+
+
+@app.get("/api/v1/feeds", response_model=list[FeedConfigResponse])
+def list_feeds(db: Session = Depends(get_db)) -> list[FeedConfigResponse]:
+    feeds = db.query(IngestFeedConfig).order_by(IngestFeedConfig.created_at.desc()).all()
+    return [FeedConfigResponse.model_validate(feed) for feed in feeds]
+
+
+@app.post("/api/v1/feeds", response_model=FeedConfigResponse)
+def create_feed(payload: FeedConfigCreateRequest, db: Session = Depends(get_db)) -> FeedConfigResponse:
+    validate_feed_payload(
+        source_site=payload.source_site,
+        search_url=payload.search_url,
+        schedule_hour_local=payload.schedule_hour_local,
+        max_pages_per_run=payload.max_pages_per_run,
+        radius_miles=payload.radius_miles,
+    )
+    existing = db.query(IngestFeedConfig).filter(IngestFeedConfig.name == payload.name.strip()).one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=400, detail="Feed name already exists")
+
+    feed = IngestFeedConfig(
+        name=payload.name.strip(),
+        source_site=payload.source_site,
+        search_url=payload.search_url.strip(),
+        enabled=payload.enabled,
+        include_keywords=payload.include_keywords.strip(),
+        exclude_keywords=payload.exclude_keywords.strip(),
+        location_hint=payload.location_hint.strip(),
+        radius_miles=payload.radius_miles,
+        schedule_days=payload.schedule_days.strip().lower(),
+        schedule_hour_local=payload.schedule_hour_local,
+        max_pages_per_run=payload.max_pages_per_run,
+    )
+    db.add(feed)
+    db.commit()
+    db.refresh(feed)
+    return FeedConfigResponse.model_validate(feed)
+
+
+@app.patch("/api/v1/feeds/{feed_id}", response_model=FeedConfigResponse)
+def update_feed(feed_id: str, payload: FeedConfigUpdateRequest, db: Session = Depends(get_db)) -> FeedConfigResponse:
+    feed = db.query(IngestFeedConfig).filter(IngestFeedConfig.id == feed_id).one_or_none()
+    if feed is None:
+        raise HTTPException(status_code=404, detail="Feed not found")
+
+    next_source_site = payload.source_site if payload.source_site is not None else feed.source_site
+    next_search_url = payload.search_url.strip() if payload.search_url is not None else feed.search_url
+    next_schedule_hour = payload.schedule_hour_local if payload.schedule_hour_local is not None else feed.schedule_hour_local
+    next_max_pages = payload.max_pages_per_run if payload.max_pages_per_run is not None else feed.max_pages_per_run
+    next_radius_miles = payload.radius_miles if payload.radius_miles is not None else feed.radius_miles
+    validate_feed_payload(
+        source_site=next_source_site,
+        search_url=next_search_url,
+        schedule_hour_local=next_schedule_hour,
+        max_pages_per_run=next_max_pages,
+        radius_miles=next_radius_miles,
+    )
+
+    if payload.name is not None:
+        new_name = payload.name.strip()
+        if new_name != feed.name:
+            existing = db.query(IngestFeedConfig).filter(IngestFeedConfig.name == new_name).one_or_none()
+            if existing is not None and existing.id != feed.id:
+                raise HTTPException(status_code=400, detail="Feed name already exists")
+        feed.name = new_name
+
+    if payload.source_site is not None:
+        feed.source_site = payload.source_site
+    if payload.search_url is not None:
+        feed.search_url = payload.search_url.strip()
+    if payload.enabled is not None:
+        feed.enabled = payload.enabled
+    if payload.include_keywords is not None:
+        feed.include_keywords = payload.include_keywords.strip()
+    if payload.exclude_keywords is not None:
+        feed.exclude_keywords = payload.exclude_keywords.strip()
+    if payload.location_hint is not None:
+        feed.location_hint = payload.location_hint.strip()
+    if payload.radius_miles is not None:
+        feed.radius_miles = payload.radius_miles
+    if payload.schedule_days is not None:
+        feed.schedule_days = payload.schedule_days.strip().lower()
+    if payload.schedule_hour_local is not None:
+        feed.schedule_hour_local = payload.schedule_hour_local
+    if payload.max_pages_per_run is not None:
+        feed.max_pages_per_run = payload.max_pages_per_run
+
+    feed.updated_at = datetime.utcnow()
+    db.add(feed)
+    db.commit()
+    db.refresh(feed)
+    return FeedConfigResponse.model_validate(feed)
+
+
+@app.get("/api/v1/ingest-runs", response_model=list[IngestRunResponse])
+def list_ingest_runs(limit: int = Query(default=10, ge=1, le=50), db: Session = Depends(get_db)) -> list[IngestRunResponse]:
+    runs = db.query(IngestRun).order_by(IngestRun.created_at.desc()).limit(limit).all()
+    return [IngestRunResponse.model_validate(run) for run in runs]
+
+
+@app.post("/api/v1/ingest-runs/run-now", response_model=RunNowResponse)
+def run_now(payload: RunNowRequest, db: Session = Depends(get_db)) -> RunNowResponse:
+    global ACTIVE_RUN_ID
+    requested_feed_ids = payload.feed_ids or None
+
+    with RUN_LOCK:
+        active = db.query(IngestRun).filter(IngestRun.status.in_(["queued", "running"])).order_by(IngestRun.created_at.desc()).first()
+        if active is not None:
+            raise HTTPException(status_code=409, detail="Another ingest run is already queued or running")
+
+        run = IngestRun(
+            status="queued",
+            trigger_type="manual",
+            requested_feed_ids=",".join(requested_feed_ids) if requested_feed_ids else None,
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        ACTIVE_RUN_ID = run.id
+
+        worker = Thread(target=run_ingest_async, args=(run.id, requested_feed_ids), daemon=True)
+        worker.start()
+
+    return RunNowResponse(run_id=run.id, status=run.status)
